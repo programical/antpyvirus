@@ -9,6 +9,7 @@ import socket, os, hashlib, threading, tkinter as tk
 class Antpyvirus:
     def __init__(self):
         self.hashes = {} # path:hash
+        self.notScanned = 0
         # window
         self.window = tk.Tk()
         self.window.wm_title('antpyvirus')
@@ -74,9 +75,15 @@ class Antpyvirus:
         self.resultField.delete(1.0, tk.END)
         self.resultField.config(state = tk.DISABLED)
 
+        # clear logfile
+        open('scan.log', 'w').close()
+
         # hash
         scanTarget = self.scanPathEntry.get()
+        if len(scanTarget) > 1 and scanTarget.endswith('/'):
+            scanTarget = scanTarget[:-1]
         self.hashes = {}
+        self.notScanned = 0
         self.output('Scanning: ' + scanTarget + '\nHashing...\n')
         if os.path.isdir(scanTarget):
             self.analyzeDir(scanTarget)
@@ -94,6 +101,11 @@ class Antpyvirus:
                 self.output('Analysis error: ' + str(err) + '\n')
         else:
             self.output('Nothing to do.\n')
+        if self.notScanned > 0:
+            self.output(
+                'Not scanned: ' + str(self.notScanned) +
+                ' files.\nSee scan.log for details.\n'
+            )
         self.output('Done.\n')
         # enable interface
         self.scanButton.config(state = tk.NORMAL)
@@ -109,16 +121,20 @@ class Antpyvirus:
                 elif os.path.isfile(whole):
                     self.addHash(whole)
                 else:
-                    self.output('Not found: ' + whole + '\n')
+                    self.log('Cannot access: ' + whole + '\n')
+                    self.notScanned += 1
         except Exception as err:
-            self.output('Scanning error: ' + str(err) + '\n')
+            self.log('Scanning error: ' + str(err) + '\n')
+            self.notScanned += 1
 
     def addHash(self, path: str):
+        # FIXME: crazy ram usage, obviously.
         try:
             with open(path, 'rb') as file:
                 self.hashes[path] = hashlib.md5(file.read()).hexdigest()
         except Exception as err:
-            self.output('Hashing error: ' + str(err) + '\n')
+            self.log('Hashing error: ' + str(err) + '\n')
+            self.notScanned += 1
 
     def checkHashes(self):
         # format hashes to expected format
@@ -165,6 +181,10 @@ class Antpyvirus:
         self.resultField.config(state = tk.NORMAL)
         self.resultField.insert(tk.END, text)
         self.resultField.config(state = tk.DISABLED)
+
+    def log(self, text: str):
+        with open('scan.log', 'a') as logfile:
+            logfile.write(text)
 
 
 def main():
