@@ -6,10 +6,123 @@
 import socket, os, hashlib, threading, tkinter as tk
 
 
-class Antpyvirus:
+# writes to the log file
+class Logger:
+    logFile = os.path.dirname(os.path.abspath(__file__)) + '/log/scan.log'
+
+    def log(text: str):
+        with open(Logger.logFile, 'a') as file:
+            file.write(text)
+
+    def clear():
+        open(Logger.logFile, 'w').close()
+
+
+# scans, hashes and analyzes a tree/file for threats
+class Scanner:
     def __init__(self):
         self.hashes = {} # path:hash
+        self.notScanned = 0 # n of files and dirs that caused errors
+        self.threats = {} # path:percentage(float)
+
+    # recursively scans tree
+    def recursiveScan(self, path: str):
+        try:
+            if os.path.isdir(path):
+                for child in os.listdir(path):
+                    self.recursiveScan(path + '/' + child)
+            elif os.path.isfile(path):
+                self.addHash(path)
+            else:
+                Logger.log('Cannot access: ' + path + '\n')
+                self.notScanned += 1
+        except Exception as err:
+            Logger.log('Scanning error: ' + str(err) + '\n')
+            self.notScanned += 1
+
+    # stores hashes for later analysis
+    def addHash(self, path: str):
+        # FIXME: crazy ram usage, obviously.
+        try:
+            with open(path, 'rb') as file:
+                self.hashes[path] = hashlib.md5(file.read()).hexdigest()
+        except Exception as err:
+            Logger.log('Hashing error: ' + str(err) + '\n')
+            self.notScanned += 1
+
+    def scan(self, target: str, callback: callable):
+        # clear logfile
+        Logger.clear()
+
+        # format target
+        if len(target) > 1 and target.endswith('/'):
+            target = target[:-1]
+
+        # hash files
+        self.hashes = {}
         self.notScanned = 0
+        self.threats = {}
+        Logger.log('Scanning: ' + target + '\nHashing...\n')
+        if os.path.isdir(target) or os.path.isfile(target):
+            self.recursiveScan(target)
+        else:
+            Logger.log('Invalid path: ' + target + '\n')
+
+        # compare with database
+        Logger.log('Sending for analysis...\n')
+        if self.hashes != {}:
+            # change hashes to expected format
+            request = 'begin\n'
+            for key in self.hashes:
+                request += self.hashes[key] + '\n'
+            request += 'end'
+
+            # setup socket
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(5)
+
+            # send hashes
+            sock.connect(('hash.cymru.com', 43))
+            sock.send(request.encode())
+
+            # receive response
+            response = b''
+            while True:
+                try:
+                    data = sock.recv(4096)
+                    if not data:
+                        break
+                    else:
+                        response += data
+                except socket.timeout:
+                    break
+
+            sock.close()
+
+            # parse response
+            for line in response.decode().split('\n')[2:]:
+                if line.strip() != '':
+                    hash = line.split(' ')[0]
+                    file = ''
+                    for path in self.hashes:
+                        if self.hashes[path] == hash:
+                            file = path
+                            break
+                    score = line.split(' ')[2]
+                    if score != 'NO_DATA':
+                        Logger.log('Threat (' + score + '%): ' + file + '\n')
+                        self.threats[file] = float(score)
+        else:
+            Logger.log('Nothing to do.\n')
+
+        # finish
+        Logger.log('Not scanned: ' + str(self.notScanned) + ' files.\nDone.\n')
+        callback(self.threats, self.notScanned)
+
+
+# controls the interface, calls the shots
+class App:
+    def __init__(self):
         # window
         self.window = tk.Tk()
         self.window.wm_title('antpyvirus')
@@ -57,7 +170,7 @@ class Antpyvirus:
             bd = 0,
             highlightthickness = 0,
             bg = '#111111',
-            fg = '#FFFFFF'
+            fg = '#FF0000'
         )
         self.resultField.pack(side = tk.TOP, fill = tk.BOTH, expand = tk.YES)
         self.resultField.config(state = tk.DISABLED)
@@ -65,130 +178,29 @@ class Antpyvirus:
         self.window.mainloop()
 
     def startScan(self):
-        threading.Thread(target = self.scan).start()
-
-    def scan(self):
-        # disable interface
+        # prevent starting multiple scans at once
         self.scanButton.config(state = tk.DISABLED)
         self.scanPathEntry.config(state = tk.DISABLED)
-        self.resultField.config(state = tk.NORMAL)
-        self.resultField.delete(1.0, tk.END)
-        self.resultField.config(state = tk.DISABLED)
+        # spawn scan thread
+        threading.Thread(
+            target = Scanner().scan,
+            args = (self.scanPathEntry.get(), self.endScan)
+        ).start()
 
-        # clear logfile
-        open('scan.log', 'w').close()
-
-        # hash
-        scanTarget = self.scanPathEntry.get()
-        if len(scanTarget) > 1 and scanTarget.endswith('/'):
-            scanTarget = scanTarget[:-1]
-        self.hashes = {}
-        self.notScanned = 0
-        self.output('Scanning: ' + scanTarget + '\nHashing...\n')
-        if os.path.isdir(scanTarget):
-            self.analyzeDir(scanTarget)
-        elif os.path.isfile(scanTarget):
-            self.addHash(scanTarget)
-        else:
-            self.output('Invalid path: ' + scanTarget + '\n')
-
-        # compare with database
-        self.output('Sending for analysis...\n')
-        if self.hashes != {}:
-            try:
-                self.checkHashes()
-            except Exception as err:
-                self.output('Analysis error: ' + str(err) + '\n')
-        else:
-            self.output('Nothing to do.\n')
-        if self.notScanned > 0:
-            self.output(
-                'Not scanned: ' + str(self.notScanned) +
-                ' files.\nSee scan.log for details.\n'
-            )
-        self.output('Done.\n')
-        # enable interface
+    def endScan(self, threats: dict, notScanned: int):
+        # allow scanning again
         self.scanButton.config(state = tk.NORMAL)
         self.scanPathEntry.config(state = tk.NORMAL)
-
-    def analyzeDir(self, dir: str):
-        try:
-            # recursive scan
-            for child in os.listdir(dir):
-                whole = dir + '/' + child
-                if os.path.isdir(whole):
-                    self.analyzeDir(whole)
-                elif os.path.isfile(whole):
-                    self.addHash(whole)
-                else:
-                    self.log('Cannot access: ' + whole + '\n')
-                    self.notScanned += 1
-        except Exception as err:
-            self.log('Scanning error: ' + str(err) + '\n')
-            self.notScanned += 1
-
-    def addHash(self, path: str):
-        # FIXME: crazy ram usage, obviously.
-        try:
-            with open(path, 'rb') as file:
-                self.hashes[path] = hashlib.md5(file.read()).hexdigest()
-        except Exception as err:
-            self.log('Hashing error: ' + str(err) + '\n')
-            self.notScanned += 1
-
-    def checkHashes(self):
-        # format hashes to expected format
-        request = 'begin\n'
-        for key in self.hashes:
-            request += self.hashes[key] + '\n'
-        request += 'end'
-
-        # setup socket
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(5)
-
-        # send hashes
-        sock.connect(('hash.cymru.com', 43))
-        sock.send(request.encode())
-
-        # receive response
-        response = b''
-        while True:
-            try:
-                data = sock.recv(4096)
-                response += data
-                if not data:
-                    break
-            except socket.timeout:
-                break
-
-        sock.close()
-
-        # parse response
-        for line in response.decode().split('\n')[2:]:
-            if line.strip() != '':
-                hash = line.split(' ')[0]
-                file = ''
-                for path in self.hashes:
-                    if self.hashes[path] == hash:
-                        file = path
-                        break
-                score = line.split(' ')[2]
-                if score != 'NO_DATA':
-                    self.output('Threat (' + score + '%): ' + file + '\n')
-
-    def output(self, text: str):
+        # print results
         self.resultField.config(state = tk.NORMAL)
-        self.resultField.insert(tk.END, text)
+        self.resultField.delete(1.0, tk.END)
+        for p in threats:
+            self.resultField.insert(tk.END, '(' + threats[p] + '%) ' + p + '\n')
         self.resultField.config(state = tk.DISABLED)
-
-    def log(self, text: str):
-        with open('scan.log', 'a') as logfile:
-            logfile.write(text)
 
 
 def main():
-    Antpyvirus()
+    App()
 
 
 if __name__ == '__main__':
