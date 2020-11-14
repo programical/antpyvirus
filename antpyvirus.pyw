@@ -161,7 +161,7 @@ class App:
             bg = '#222222',
             fg = '#FFFFFF',
             activebackground = '#222222',
-            activeforeground = '#44FF44',
+            activeforeground = '#FFFF44',
         )
         self.scanButton.pack(side = tk.LEFT)
         # result field
@@ -170,7 +170,7 @@ class App:
             bd = 0,
             highlightthickness = 0,
             bg = '#111111',
-            fg = '#FF0000'
+            fg = '#FFFF00'
         )
         self.resultField.pack(side = tk.TOP, fill = tk.BOTH, expand = tk.YES)
         self.resultField.config(state = tk.DISABLED)
@@ -181,6 +181,11 @@ class App:
         # prevent starting multiple scans at once
         self.scanButton.config(state = tk.DISABLED)
         self.scanPathEntry.config(state = tk.DISABLED)
+        # print new scan
+        self.resultField.config(state = tk.NORMAL)
+        self.resultField.delete(1.0, tk.END)
+        self.resultField.insert(tk.END, 'Scanning...\n')
+        self.resultField.config(state = tk.DISABLED)
         # spawn scan thread
         threading.Thread(
             target = Scanner().scan,
@@ -194,8 +199,16 @@ class App:
         # print results
         self.resultField.config(state = tk.NORMAL)
         self.resultField.delete(1.0, tk.END)
-        for p in threats:
-            self.resultField.insert(tk.END, '(' + threats[p] + '%) ' + p + '\n')
+        self.resultField.insert(tk.END, str(notScanned) + ' not scanned.\n')
+        if len(threats) > 0:
+            for path in threats:
+                self.resultField.insert(
+                    tk.END,
+                    '(' + threats[path] + '%) ' + path + '\n'
+                )
+        else:
+            self.resultField.insert(tk.END, 'No threats found.\n')
+
         self.resultField.config(state = tk.DISABLED)
 
 
