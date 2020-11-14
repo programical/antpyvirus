@@ -43,6 +43,7 @@ class Scanner:
     # stores hashes for later analysis
     def addHash(self, path: str):
         # FIXME: crazy ram usage, obviously.
+        # send in smaller batches? use local storage instead of RAM?
         try:
             with open(path, 'rb') as file:
                 self.hashes[path] = hashlib.md5(file.read()).hexdigest()
